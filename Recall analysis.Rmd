@@ -1,0 +1,581 @@
+---
+title: "Recall trend analysis"
+author: "Rongrong Dai"
+date: "7/24/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+Auto manufacturers that determine a vehicle has a safety defect will conduct a recall campaign. During a recall all vehicle owners will be notified there is a problem and are asked to contact their auto dealership to schedule vehicle service to correct or resolve the safety concern.
+
+When recalls affect a large number of vehicles, day-to-day business at the dealerships can be disrupted causing a drop in new vehicle sales, part sales or tire replacements. Understanding the frequency and size of recalls is important for any company working in the automotive industry.
+
+The National Highway Traffic Safety Administration (NHTSA) is a federal agency that requires auto manufacturers to notify the public when a significant safety concern is identified. The information is available in data tables stored on the website for NHTSA’s Office of Defects Investigation.
+
+In this project, I imported data from the NHTSA web site and analyzed the recall trend for different manufacturers. Moreover,according to the recall frequency 
+and size, I grouped the manufacturers using hierarchical clustering. 
+
+## 1. Load the package 
+```{r cars, warning= FALSE, message = FALSE}
+library(readr)
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+library(tidyr)
+library(broom)
+library(purrr)
+```
+
+## 2. Load the data
+Load data from URL to import the up-to-date data, the default setting of import
+function doesn't work well, customized parameters. Add column names and set 
+column types. The meaning of the column names can be found in 
+https://www-odi.nhtsa.dot.gov/downloads/folders/Recalls/RCL.txt
+
+```{r pressure, warning= FALSE, message = FALSE}
+#set up temporary file to download the zip recall file
+temp <- tempfile()
+download.file("https://www-odi.nhtsa.dot.gov/downloads/folders/Recalls/FLAT_RCL.zip",temp)
+
+# read into r and customize parameters based on metadata
+recall_df <- read_delim(unz(temp, "FLAT_RCL.txt"), '\t', quote = "",
+                        col_names =
+                          c("RECORD_ID", "CAMPNO", "MAKETXT",
+                            "MODELTXT", "YEARTXT","MFGCAMPNO", 
+                            "COMPNAME", "MFGNAME","BGMAN", "ENDMAN",
+                            "RCLTYPECD", "POTAFF", "ODATE",
+                            "INFLUENCED_BY", "MFGTXT",
+                            "RCDATE", "DATEA", "RPNO", "FMVSS", 
+                            "DESC_DEFECT","CONEQUENCE_DEFECT", 
+                            "CORRECTIVE_ACTION","NOTES", "RCL_CMPT_ID",
+                            "MFR_COMP_NAME","MFR_COMP_DESC", "MFR_COMP_PTNO"),
+                        col_types = cols(
+                          .default = col_character(),
+                          RECORD_ID = col_double(),
+                          BGMAN = col_date("%Y%m%d"),
+                          ENDMAN = col_date("%Y%m%d"),
+                          ODATE = col_date("%Y%m%d"),
+                          RCDATE = col_date("%Y%m%d"),
+                          DATEA = col_date("%Y%m%d"),
+                          POTAFF = col_double()
+                          )
+                        )
+
+
+unlink(temp)
+
+```
+
+## 3. Generate dataset focus on specific manufacturers 
+
+```{r,  warning= FALSE, message = FALSE}
+recall_df <- recall_df %>% 
+  mutate(target_mfr = 
+            case_when(
+    grepl("BMW", MFGTXT, ignore.case = T) == TRUE ~ "BMW",
+    grepl("NISSAN", MFGTXT, ignore.case = T) == TRUE ~ "NISSAN",
+    grepl("INFINITI", MFGTXT, ignore.case = T) == TRUE ~ "INFINITI",
+    grepl("VOLVO", MFGTXT, ignore.case = T) == TRUE ~ "VOLVO",
+    grepl("TOYOTA", MFGTXT, ignore.case = T) == TRUE ~ "TOYOTA",
+    grepl("MINI", MFGTXT, ignore.case = T) == TRUE ~ "MINI",
+    grepl("AUDI", MFGTXT, ignore.case = T) == TRUE ~ "AUDI",
+    grepl("KIA", MFGTXT, ignore.case = T) == TRUE ~ "KIA",
+    grepl("HONDA", MFGTXT, ignore.case = T) == TRUE ~ "HONDA",
+    grepl("MOPAR", MFGTXT, ignore.case = T) == TRUE ~ "MOPAR",
+    grepl("MERCEDES", MFGTXT, ignore.case = T) == TRUE ~ "MERCEDES",
+    grepl("VOLKSWAGEN", MFGTXT, ignore.case = T) == TRUE ~ "VOLKSWAGEN",
+    grepl("MAZDA", MFGTXT, ignore.case = T) == TRUE ~ "MAZDA",
+    grepl("JAGUAR", MFGTXT, ignore.case = T) == TRUE ~ "JAGUAR",
+    grepl("SUBARU", MFGTXT, ignore.case = T) == TRUE ~ "SUBARU",
+    grepl("LEXUS", MFGTXT, ignore.case = T) == TRUE ~ "LEXUS",
+    grepl("HYUNDAI", MFGTXT, ignore.case = T) == TRUE ~ "HYUNDAI",
+    grepl("LAND ROVER", MFGTXT, ignore.case = T) == TRUE ~ "LAND ROVER",
+    grepl("ACURA", MFGTXT, ignore.case = T) == TRUE ~ "ACURA",
+    grepl("PORSCHE", MFGTXT, ignore.case = T) == TRUE ~ "PORSCHE",
+    
+  )) %>% 
+  filter(!is.na(target_mfr))
+
+# Check the number of records for each manufacturer, display it in descending 
+# order
+recall_df %>% group_by(target_mfr)%>% summarise(n = n()) %>% arrange(desc(n))
+
+
+```
+
+## 4. Check the data quality and clean the data
+```{r,  warning= FALSE, message = FALSE}
+#summary(recall_df)
+
+check_BGMAN <- recall_df[!is.na(recall_df$BGMAN) & 
+                           (year(recall_df$BGMAN) < 1968), 
+                         c("BGMAN", "ENDMAN", "DATEA")]
+tail(check_BGMAN)
+
+# Some records with BEGIN DATE OF MANUFACTURING earlier than 1901 are 
+# problematic. Since that is small portion(9 records), we got rid of them
+recall_BGMAN_df <- 
+  recall_df[!is.na(recall_df$BGMAN) & (year(recall_df$BGMAN) > 1900),]
+
+#hist(as.numeric(recall_BGMAN_df$DATEA - recall_BGMAN_df$BGMAN))
+summary(as.numeric(recall_BGMAN_df$DATEA - recall_BGMAN_df$BGMAN))
+
+# A small portion of data(14 records) create the report before manufacturing,
+# get rid of them, since the data for 1979 is not just for 1979 but for 
+# the total counts before 1979. To analyze the trend, I only include data after 
+# 1980.
+
+recall_BGMAN_df <- 
+recall_BGMAN_df[
+  as.numeric(recall_BGMAN_df$DATEA - recall_BGMAN_df$BGMAN) > 0,] %>% 
+  mutate(YEAR_DATEA = year(DATEA)) %>%
+  filter(YEAR_DATEA > 1980) 
+```
+
+Although a small portion of data have problem about the begin date of 
+manufacturing, their other records seem to be fine. We will still use those
+data when the analysis doesn't involve the begin date of manufacturing
+
+## 5. Data analysis
+
+### 5.1. The number of recalls and affected vehicles with year considering 
+### all manufacurers
+
+```{r, message = FALSE, warning = FALSE}
+# The number of recalls by year
+recall_byYear_df <- recall_df %>% 
+                    mutate(YEAR_DATEA = year(DATEA)) %>% 
+                    select(YEAR_DATEA, CAMPNO) %>% 
+                    distinct(CAMPNO, .keep_all = T) %>%
+                    group_by(YEAR_DATEA) %>% 
+                    summarise(rcTotal_byYear = n()) %>%
+                    arrange(YEAR_DATEA)  
+               
+head(recall_byYear_df)
+recall_byYear_plot <- ggplot(aes(x = YEAR_DATEA, y = rcTotal_byYear), 
+                       data = recall_byYear_df) +  
+  geom_line(size = 1, show.legend = F) +
+  xlab("Year of recall") + ylab("Number of recalls") +
+  theme(text = element_text(size=15))
+  
+recall_byYear_plot
+
+# The number of affected vehicles by year
+affCount_byYear_df <- recall_df %>% 
+                      mutate(YEAR_DATEA = year(DATEA)) %>% 
+                      filter(!is.na(POTAFF)) %>% group_by(YEAR_DATEA) %>%
+                      summarise(affTotal_byYear = sum(POTAFF))
+                      
+head(affCount_byYear_df)
+
+affCount_byYear_plot <- ggplot(aes(x = YEAR_DATEA, y = affTotal_byYear), 
+                       data = affCount_byYear_df) +  
+  geom_line(size = 1, show.legend = F) +
+  xlab("Year") + ylab("Number of affected vehicles") +
+  theme(text = element_text(size=15))
+
+affCount_byYear_plot
+
+
+```
+
+The significant drop in 1980 is may be because the data for 1979 is not just for 1979 but for the total counts before 1979. To analyze the trend, I only include data after 1980.
+
+```{r,  warning= FALSE, message = FALSE}
+# Filter data to only include those after 1980
+recall_after1980 <- recall_df %>% mutate(YEAR_DATEA = year(DATEA)) %>%
+                         filter(YEAR_DATEA > 1980)
+```
+
+### 5.2 Examine each manufacturer's contribution to the number of recalls 
+### and affected vehicles
+
+Plot top 3 manufacturers that have most recalls and affected vehicles in recent 
+5 years
+```{r, warning= FALSE, message = FALSE}
+# Top 3 manufacturers that have most recalls in Recent 5 years
+Current_year <- max(year(recall_df$DATEA))
+recall_Recent5y <- recall_df %>% mutate(YEAR_DATEA = year(DATEA)) %>%
+  filter(YEAR_DATEA > (Current_year - 5)) 
+
+recall_mfr_Recent5y <- recall_Recent5y %>% 
+                       select(YEAR_DATEA, CAMPNO, target_mfr) %>% 
+                       distinct(CAMPNO, .keep_all = T) %>%
+                       group_by(YEAR_DATEA, target_mfr) %>% 
+                       summarise(recallCount = dplyr::n())%>%
+                       group_by(YEAR_DATEA) %>%
+                       mutate(percent = recallCount/sum(recallCount)) %>%
+                       top_n(3, percent) %>%
+                       arrange(YEAR_DATEA) 
+other_mfr_Recent5y <- data.frame("YEAR_DATEA" = (Current_year-4):Current_year,
+                                 "target_mfr" = "Other",
+                                 "percent" = 
+                                   recall_mfr_Recent5y %>%
+                                   group_by(YEAR_DATEA) %>%
+                                   summarise(percent = 
+                                               1- sum(percent))%>%
+                                   select(percent))
+                                   
+
+recall_mfr_Recent5y <- rbind(recall_mfr_Recent5y,other_mfr_Recent5y) 
+                            
+recall_mfr_Recent5y
+ggplot(data=recall_mfr_Recent5y, 
+       aes(x=YEAR_DATEA, y=percent, fill=target_mfr)) + 
+         geom_bar(stat="identity")  + 
+           ylab("Percent of recalls") +xlab("Year") + 
+              scale_fill_discrete(name = "Manufacturer")
+
+# Top 3 manufacturers that have most affected vehicles in Recent 5 years 
+aff_mfr_Recent5y <- recall_Recent5y %>% 
+                       group_by(YEAR_DATEA, target_mfr) %>% 
+                       summarise(affCount = sum(POTAFF))%>%
+                       group_by(YEAR_DATEA) %>%
+                       mutate(percent = affCount/sum(affCount)) %>%
+                       top_n(3, percent) %>%
+                       arrange(YEAR_DATEA)  
+
+
+
+other_Aff_Recent5y <- data.frame("YEAR_DATEA" = (Current_year-4):Current_year,
+                                 "target_mfr" = "Other",
+                                 "percent" = 
+                                   aff_mfr_Recent5y %>%
+                                   group_by(YEAR_DATEA) %>%
+                                   summarise(percent = 
+                                               1- sum(percent))%>%
+                                   select(percent))
+                                   
+
+aff_mfr_Recent5y <- rbind(aff_mfr_Recent5y,other_Aff_Recent5y) 
+
+aff_mfr_Recent5y
+
+label_aff <- aff_mfr_Recent5y %>% ungroup() %>% select(target_mfr) %>%                          distinct(target_mfr)
+ggplot(data=aff_mfr_Recent5y, 
+       aes(x=YEAR_DATEA, y=percent, fill=target_mfr)) + 
+          geom_bar(stat="identity")  + 
+           ylab("Percent of vehicles affected") +xlab("Year") +
+            scale_fill_discrete(name = "Manufacturer")
+             
+```
+
+Calculate the total counts of recall and affected vehicles for each manufacturer
+```{r,  warning= FALSE, message = FALSE}
+recall_mfr_after1980 <- recall_after1980 %>% 
+                       select(CAMPNO, target_mfr) %>% 
+                       distinct(CAMPNO, target_mfr, .keep_all = T) %>%
+                       group_by(target_mfr) %>%
+                       summarise(recallCount = n())%>%
+                       arrange(recallCount) 
+recall_mfr_after1980
+aff_mfr_after1980 <- recall_after1980 %>% 
+                       filter(!is.na(recall_after1980$POTAFF)) %>%
+                       group_by(target_mfr) %>% 
+                       summarise(affCount = sum(POTAFF))%>%
+                       arrange(affCount) 
+aff_mfr_after1980
+```
+### 5.3. Trends for each manufacturer focus on the number of campaigns and 
+### the number of vehicles affected by specific recall campaigns
+
+Different manufacturers have different trends in the number of campaigns and vehicles affected. Take JAGUAR and TOYOTA as examples, plot their trends.
+
+```{r,  warning= FALSE, message = FALSE}
+# Create recall data for each manufacturer as a function of year
+Create_mfrRecall <- function(x){
+                    recall_after1980 %>%
+                       filter(target_mfr == x) %>%
+                       select(YEAR_DATEA, CAMPNO) %>% 
+                       distinct(CAMPNO, .keep_all = T) %>%
+                       group_by(YEAR_DATEA) %>% 
+                       summarise(count_byYear = n()) %>%
+                       arrange(desc(YEAR_DATEA)) 
+                       
+}
+
+# Create affected vehicle data for each manufacturer as a function of year
+Create_mfrAff <- function(x){
+                    recall_after1980 %>%
+                       filter(!is.na(recall_after1980$POTAFF)) %>%
+                       filter(target_mfr == x) %>%
+                       select(YEAR_DATEA, POTAFF) %>%
+                       group_by(YEAR_DATEA) %>% 
+                       summarise(count_byYear = log(sum(POTAFF))) %>%
+                       arrange(desc(YEAR_DATEA)) 
+                       
+}
+
+
+JAGUAR_TOYOTA_df <- merge(
+  Create_mfrRecall("JAGUAR") %>% rename(count_JAGUAR=count_byYear), 
+  Create_mfrRecall("TOYOTA") %>% rename(count_TOYOTA=count_byYear),
+                          all = TRUE)
+
+JAGUAR_TOYOTA_df[is.na(JAGUAR_TOYOTA_df)] = 0 
+
+plot_TwoMfr <- function(x, y) {
+  countColor <- "#69b3a2"
+  percentageColor <- rgb(0.2, 0.6, 0.9, 1)
+  coeff = 1
+
+  ggplot(data = x, aes(x=YEAR_DATEA)) +
+  
+        geom_line( aes(y=count_JAGUAR), size=2, color=countColor) + 
+        geom_line( aes(y=count_TOYOTA), size=2, color=percentageColor) +
+  
+        scale_y_continuous(
+    
+        # Features of the first axis
+        name = "Count for JAGUAR",
+    
+        # Add a second axis and specify its features
+        sec.axis = sec_axis(~./coeff, name="Count for TOYOTA")
+        ) + 
+        ggtitle(y) + 
+        theme(
+          axis.title.y = element_text(color = countColor, size=15),
+          axis.title.y.right = element_text(color = percentageColor, size=15),
+          axis.text.x = element_text(color = "grey20", size = 12),
+          axis.text.y = element_text(color = "grey20", size = 12),
+          plot.title = element_text(color = "black", size = 15)
+        )  
+        
+}
+
+plot_TwoMfr(JAGUAR_TOYOTA_df, "Recall for JAGUAR and TOYOTA")
+
+JAGUAR_TOYOTA_Aff_df <- merge(
+  Create_mfrAff("JAGUAR") %>% rename(count_JAGUAR=count_byYear), 
+  Create_mfrAff("TOYOTA") %>% rename(count_TOYOTA=count_byYear),
+                          all = TRUE)
+
+JAGUAR_TOYOTA_Aff_df[is.na(JAGUAR_TOYOTA_Aff_df)] = 0
+plot_TwoMfr(JAGUAR_TOYOTA_Aff_df, 
+            "Logarithm of affected vehicles for JAGUAR and TOYOTA")
+```
+
+Slope of the linear fit of counts by year can quantify the trend for different manufacturers. The number of vehicles is changed to the logarithm of the count before the fit.
+
+```{r,warning= FALSE, message = FALSE}
+target_mfr_list <- c( "BMW","NISSAN","INFINITI","VOLVO","TOYOTA","MINI",
+                        "AUDI","KIA","HONDA","MOPAR","MERCEDES","VOLKSWAGEN",
+                        "MAZDA","JAGUAR","SUBARU","LEXUS","HYUNDAI",
+                        "LAND ROVER","ACURA","PORSCHE")
+
+
+# Plot the trend, plotType_indicator indicates whether this plot is for recall or
+# affected vehicle
+Plot_mfr_byYear <- function(data, x, mfr, plotType_indicator){
+  if(nrow(data) > 1) {
+    lm_fit <- lm(data$count_byYear ~ x)
+    
+    predicted_df <- data.frame(cbind(x, 
+                                   count_pred = predict(lm_fit, data)))
+  
+    title <- paste(plotType_indicator, " for ", mfr, sep = "")
+    ylab <- "Count"
+    if (plotType_indicator != "Recall"){
+      ylab <- "log(count)"
+    }
+   countColor <- "#69b3a2"
+   
+
+    print(ggplot(data = data, aes(x = YEAR_DATEA, y = count_byYear)) + 
+            geom_point(color='blue') +
+            geom_line(color='red',data = predicted_df, aes(x=x, y=count_pred))+
+            xlab("Year") + ylab(ylab) +
+            ggtitle(title) + 
+            theme(text = element_text(size=15)))
+ 
+     }
+  
+}
+
+Plot_mfr_byYear(Create_mfrRecall("NISSAN"), 
+                    Create_mfrRecall("NISSAN")$YEAR_DATEA,
+                    "NISSAN", 
+                    "Recall")
+Plot_mfr_byYear(Create_mfrAff("NISSAN"), 
+                    Create_mfrRecall("NISSAN")$YEAR_DATEA,
+                    "NISSAN", 
+                    "Affected vehicles")
+
+
+
+```
+
+Different manufacturers have different slopes of increasing in the number of campaigns and vehicles affected
+```{r, message=FALSE, warning=FALSE}
+# test dplyr function
+test_lm <- function(){
+
+}
+
+
+# Define a funtion to get the coefficients of the linear fit
+slope_mfr_byYear <- function(data, x, mfr, plotType_indicator){
+# If manufacturers have more than 1 records do the linear fit
+    if(nrow(data) > 1) {
+    lm_fit <- lm(data$count_byYear ~ x)
+    coefficients = paste (mfr, "\t", 
+                          plotType_indicator,"\t", 
+                          unlist(lm_fit$coefficients)[1], "\t",
+                          unlist(lm_fit$coefficients)[2], "\t", sep = "")
+    lapply(coefficients, write, "rcAff_fit_coefficients.txt", append=TRUE)
+  }
+  
+}
+
+unlink("rcAff_fit_coefficients.txt")
+for (i in target_mfr_list){
+  # Check whether specific manufacturer has recalls
+  if(sum(recall_after1980$target_mfr == i) > 0){
+    # If it has recalls, then fit the trend for recall and affected vehicles
+    # and get the coeffieients
+    slope_mfr_byYear(Create_mfrRecall(i), 
+                    Create_mfrRecall(i)$YEAR_DATEA,
+                    i, 
+                    "Recall")
+    slope_mfr_byYear(Create_mfrAff(i), 
+                    Create_mfrRecall(i)$YEAR_DATEA,
+                    i, 
+                    "Affected vehicles")
+  }
+  
+}
+
+fit_coefficient <- 
+  (cbind(read_delim("rcAff_fit_coefficients.txt", '\t', quote = "",
+                              col_names = c("target_mfr", "trend_type", 
+                                             "intercept", "slope")
+                              ) %>% filter(trend_type == "Recall"), 
+  read_delim("rcAff_fit_coefficients.txt", '\t', quote = "",
+            col_names = c("target_mfr", "trend_type", 
+                           "intercept", "slope")
+            ) %>% filter(trend_type == "Affected vehicles")))[, c(1,3,4,7,8)] %>% 
+  rename(Recall_intercept = intercept,
+         Recall_slope = slope,
+         Aff_intercept = intercept.1, 
+         Aff_slope = slope.1)
+
+
+fit_coefficient$Recall_intercept = as.numeric(fit_coefficient$Recall_intercept)
+fit_coefficient$Recall_slope = as.numeric(fit_coefficient$Recall_slope)
+fit_coefficient$Aff_intercept = as.numeric(fit_coefficient$Aff_intercept)
+fit_coefficient$Aff_slope = as.numeric(fit_coefficient$Aff_slope)
+fit_coefficient
+
+
+require("ggrepel")
+ggplot(data = fit_coefficient, aes(x = Recall_slope, y = Aff_slope)) +
+  geom_point(color = "#00AFBB") + 
+  geom_text_repel(aes(label = fit_coefficient$target_mfr,
+                    size = 3.5))  + 
+  xlab("Slope of recall counts") + ylab("Slope of affected vehicle counts")+
+  theme(text = element_text(size=15)) + 
+  theme(legend.position = "none")
+
+```
+
+### 5.4. Check time intervals for each manufacturer to have a recall 
+```{r,  warning= FALSE, message = FALSE}
+
+recall_BGMAN_df$dateDiff_DATEA_BGMAN <- as.numeric(
+  difftime(recall_BGMAN_df$DATEA,recall_BGMAN_df$BGMAN,units = "weeks"))
+mfr_dateDiff <- recall_BGMAN_df %>% select(target_mfr, dateDiff_DATEA_BGMAN)
+
+p <- ggplot(mfr_dateDiff, aes(x=dateDiff_DATEA_BGMAN, y=target_mfr)) + 
+  geom_boxplot()
+p + labs(title="Time intervals from manufacturing to issuing recalls ",x="Time intervals between report creation and begining of manufacturing (weeks)", y = "Manufacturer")
+
+
+mfr_dateDiff <- recall_BGMAN_df %>% group_by(target_mfr) %>%
+                summarise(
+                median_dateDiff = median(dateDiff_DATEA_BGMAN),
+                sd_dateDiff = sd(dateDiff_DATEA_BGMAN)) %>%
+                arrange(median_dateDiff)
+
+mfr_dateDiff
+```
+### 5.5. Group manufacturers 
+
+Generate dataset for clustering by merging median time difference from manufacturer to recal, recall slope, affected vehicle slope, total recall counts, and total affected vehicle counts
+```{r, warning= FALSE, message = FALSE}
+# generate dateset for clustering
+df <- (mfr_dateDiff %>% select(target_mfr,median_dateDiff)) %>%
+       left_join(
+         fit_coefficient %>% select(target_mfr, Recall_slope, Aff_slope)) %>%
+       left_join(recall_mfr_after1980) %>%
+       left_join(aff_mfr_after1980)
+# Create a data frame for manufacturers that has no recall
+NoRC_mfr <- data.frame(
+  "target_mfr" = target_mfr_list[!(target_mfr_list %in% df$target_mfr)],
+  "median_dateDiff" = 0,
+  "Recall_slope" = 0,
+  "Aff_slope" = 0, 
+  "recallCount" = 0,
+  "affCount" = 0)
+# Add manufacturers that has no recall to the analysis dataset
+df <- rbind(df, NoRC_mfr)
+      
+```
+
+Standardize data 
+```{r}
+df[,2:6] <- apply(df[,2:6], 2, function(x) (x-mean(x))/sd(x))
+hclust <- hclust(dist(df[,2:6]), method = "average")
+```
+
+Group manufacturers using hierarchical clustering according to median time difference from manufacturer to issuing recal, recall slope, affected vehicle slope, total recall counts, and total affected vehicle counts
+```{r}
+# Divide the manufacturers into 2 groups
+plot(hclust, labels = df$target_mfr)
+rect.hclust(hclust,
+  k = 2, # k is used to specify the number of clusters
+  border = "blue"
+)
+
+# Divide the manufacturers into 3 groups
+plot(hclust, labels = df$target_mfr)
+rect.hclust(hclust,
+  k = 3, # k is used to specify the number of clusters
+  border = "red"
+)
+
+# Divide the manufacturers into 3 groups
+plot(hclust, labels = df$target_mfr)
+rect.hclust(hclust,
+  k = 4, # k is used to specify the number of clusters
+  border = "green",
+)
+
+```
+
+
+## Appendix
+
+The number of recall campaigns and vehicle affected by year and their linear fit
+```{r, warning=FALSE, message=FALSE}
+for (i in target_mfr_list){
+  # Check whether specific manufacturer has recalls
+  if(sum(recall_after1980$target_mfr == i) > 0){
+    # If it has recalls, then plot the trend for recall and affected vehicles
+    Plot_mfr_byYear(Create_mfrRecall(i), 
+                    Create_mfrRecall(i)$YEAR_DATEA,
+                    i, 
+                    "Recall")
+    Plot_mfr_byYear(Create_mfrAff(i), 
+                    Create_mfrRecall(i)$YEAR_DATEA,
+                    i, 
+                    "Affected vehicles")
+  }
+  
+}
+```
+
+Linear fit works well for majority manufacturers, we can also use splines to fit
+and use the coefficient from the fit to represent the trend. It is not ituitive
+to understand the meaning of the coefficients of the splines.
